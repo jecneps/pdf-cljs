@@ -1,0 +1,25 @@
+;; shadow-cljs configuration
+{:source-paths
+ ["src"]
+
+ :dependencies
+ [[org.clojure/core.match "1.1.0"]
+  [reagent "1.2.0"]
+  [re-frame "1.4.3"]]
+
+ :builds
+ {:app {:target :browser
+        :output-dir "public/resources/js"
+        :asset-path "/resources/js"
+        :modules {:main {:entries [pdf-cljs.core]}}
+        :devtools {:http-root "public"
+                   :http-port 8280}}
+  :dev {:target :browser
+        :output-dir "public/resources/js"
+        :asset-path "/resources/js"
+        :infer-externs true
+        :modules {:main {:entries [test.core]
+                         :init-fn test.core/init!
+                         :prepend "var shadow_esm_import = function(x) { return import(x); };"}}
+        :devtools {:http-root "public"
+                   :http-port 8288}}}}
