@@ -7,7 +7,6 @@
 
 
 
-
 (defonce root (createRoot (.. js/document (getElementById "root"))))
 
 (defn start-page []
