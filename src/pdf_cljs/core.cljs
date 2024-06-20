@@ -4,14 +4,11 @@
             [shadow.esm :as esm]
             [re-frame.core :as rf]))
 
-(defonce ^js pdfjs nil)
+(def GLOBALS {:page-margin 10
+              :spinner-size 80})
 
 (defn in-range? [i center window]
   (< (abs (- i center)) window))
-
-(defn in-range-slice [v center window]
-  (subvec v (max 0 (- center window)) (min (count v) (+ center window))))
-
 
 (defn teardown-update [page]
   (assoc page 
@@ -68,13 +65,11 @@
   ;; (println "pages out of range, cnt=" (count pages))
   (reduce (fn [[updates-acc effects-acc :as acc] page]
             (cond
-              (= :rendered (:status page)) (do
-                                            ;;  (println "in process-out-of-page, status was rendered")
-                                             [(conj updates-acc [(:index page) teardown-update])
-                                              (conj effects-acc [:pdf/reset-page-canvas (:canvas page)])])
-              (and (not= :cancelled (:update page)) 
+              (= :rendered (:status page)) [(conj updates-acc [(:index page) teardown-update])
+                                            (conj effects-acc [:pdf/reset-page-canvas (:canvas page)])]
+              (and (not= :cancelled (:update page))
                    (or (= :loading (:status page))
-                       (= :rendering (:status page)))) [(conj updates-acc [(:index page) cancelled-update]) 
+                       (= :rendering (:status page)))) [(conj updates-acc [(:index page) cancelled-update])
                                                         effects-acc]
               :else acc))
           [[] []]
@@ -111,7 +106,7 @@
                   assoc
                   :update nil
                   :status :inactive)
-   :fx [[:disptach [:pdf/check-for-work]]]})
+   :fx [[:dispatch [:pdf/check-for-work]]]})
 
 (defn render-cancelled-db-update [db i]
   (update-in db [:pdf :pages i]
@@ -124,19 +119,17 @@
  (fn [{:keys [db]} [_ i ^js page-obj]]
    (let [page (get-in db [:pdf :pages i])
          scale (get-in db [:pdf :params :scale])]
-     (match [ (:update page) (nil? (:canvas page))]
+     (match [(:update page) (nil? (:canvas page))]
        [:cancelled _] (render-cancelled-fx db i)
        [_ true] {:db (update-in db [:pdf :pages i]
                                 assoc
                                 :status :waiting-for-canvas
                                 :page-obj page-obj)}
-       [_ false] (do 
-                  ;;  (println "page-loaded about to call render")
-                   {:db (update-in db [:pdf :pages i]
+       [_ false] {:db (update-in db [:pdf :pages i]
                                  assoc
                                  :status :rendering
                                  :page-obj page-obj)
-                  :fx [[:pdf/render-page [scale i page-obj (:canvas page)]]]})))))
+                  :fx [[:pdf/render-page [scale i page-obj (:canvas page)]]]}))))
 
 (rf/reg-event-fx
  :pdf/new-canvas-size
@@ -163,6 +156,7 @@
          render-context #js {:canvasContext context
                              :viewport viewport}]
      (set! canvas -height (.-height viewport))
+     (println "render fx, canvas height: " (.-height viewport))
      (set! canvas -width (.-width viewport))
     ;;  (println "render-page")
      (js-await [_ (.-promise (.render page-obj render-context))]
@@ -198,9 +192,8 @@
  :pdf/canvas-mounted
  (fn [{:keys [db]} [_ i canvas]]
    (println "canvas mounted")
-   (if-let [prev-canvas (get-in db [:pdf :pages i :canvas])]
-     (do
-       {})
+   (if-let [_ (get-in db [:pdf :pages i :canvas])] 
+       {}
      (let [tmp-db (assoc-in db [:pdf :pages i :canvas] canvas)
            w (get-in db [:pdf :params :canvas-width])
            h (get-in db [:pdf :params :canvas-height])]
@@ -208,6 +201,7 @@
         ;;    (println "canvas w" (.-width canvas))
         ;;    (set! canvas -width w)
         ;;    (println "canvas w" (.-width canvas)))
+       (println "canvas mounted with height: " h)
        (set! canvas -width w)
        (set! canvas -height h)
        (match [(get-in db [:pdf :pages i :status])
@@ -223,7 +217,6 @@
 (rf/reg-sub
  :pdf/panel-state
  (fn [db]
-   (println "in panel-state sub")
    (get-in db [:pdf :panel-state])))
 
 (rf/reg-sub
@@ -234,13 +227,11 @@
 (rf/reg-sub
  :pdf/pdf-obj
  (fn [db _]
-   (println "in pdf-obj sub")
    (get-in db [:pdf :pdf-obj])))
 
 (rf/reg-sub
  :pdf/page-count
  (fn [db _]
-   (println "in page-count sub")
    (get-in db [:pdf :params :page-count])))
 
 (rf/reg-sub
@@ -253,51 +244,87 @@
  :pdf/params
  (fn [db [_ k]]
    (get-in db [:pdf :params k])))
+(rf/reg-sub
+ :pdf/nav-input-val
+ (fn [db _]
+   (get-in db [:pdf :nav-input-val])))
+
+(rf/reg-event-db
+ :pdf/nav-input-change
+ (fn [db [_ input-val]]
+   (assoc-in db [:pdf :nav-input-val] input-val)))
 
 
+;;#########################################################################
+;;#########################################################################
 ;;#########################################################################
 ; Components
 ;;#########################################################################
+;;#########################################################################
+;;#########################################################################
 
 (defn page-spinner []
-  [:div {:style {:background-color "red" :width "100%" :height "100%"}}])
+  [:div {:style {:background-color "#FFFFFF"
+                 :position "absolute"
+                 :top "calc(50% - 80px)"
+                 :left "calc(50% - 80px)"}}
+   (into [:div {:class "lds-spinner"}] (repeat 12 [:div]))])
+
+(defn page-nav []
+  (let [cur-page @(rf/subscribe [:pdf/params :center-page])
+        page-count @(rf/subscribe [:pdf/page-count])
+        nav-input-val @(rf/subscribe [:pdf/nav-input-val])]
+    [:div
+     [:input {:style {:width "50px"}
+              :type "number"
+              :value (if (nil? nav-input-val)
+                       (inc cur-page)
+                       nav-input-val)
+              :on-change #(rf/dispatch-sync [:pdf/nav-input-change (.. % -target -value)])
+              :on-key-down (fn [e]
+                             (when (= "Enter" (.-key e))
+                               (let [page-num (if (nil? nav-input-val)
+                                                cur-page
+                                                (dec (js/parseInt nav-input-val)))]
+                                 (rf/dispatch [:pdf/seek-page page-num]))))}]
+     [:span (str " / " page-count)]]))
 
 (defn nav-bar []
-  (println "navbar!!")
-  (let [scale @(rf/subscribe [:pdf/params :scale])
-        cur-page @(rf/subscribe [:pdf/params :center-page])]
-    [:div {:width "100%" :height "50px" :style {:display "flex" :flex-direction "row" }}
+  (let [scale @(rf/subscribe [:pdf/params :scale])]
+    [:div {:style {:display "flex"
+                   :flex-direction "row"
+                   :width "100%"
+                   :height "50px"
+                   :background-color "#0074D9"}}
      [:button {:on-click #(rf/dispatch [:pdf/view-scale-changed (+ scale 0.25)])} "+"]
      [:button {:on-click #(rf/dispatch [:pdf/view-scale-changed (- scale 0.25)])} "-"]
      [:span (str "Zoome=" scale)]
-     [:span (str "Page=" cur-page)]]))
+     [page-nav]]))
+
+(defn page-canvas [i]
+  [:canvas {:ref (fn [r]
+                   (when (not (nil? r))
+                     (rf/dispatch [:pdf/canvas-mounted i r])))
+            :style {:display "block"}}])
 
 (defn pdf-page [i]
   (println "pdf-page component")
-  (let [rendered? @(rf/subscribe [:pdf/page-rendered? i])
-        ;[width height] @(rf/subscribe [:pdf/canvas-size])
-        ]
-    [:div {:style {:margin "10px"}}
-     [:canvas {:ref (fn [r]
-                      (when (not (nil? r))
-                        (rf/dispatch [:pdf/canvas-mounted i r])))
-              ;;  :height height
-              ;;  :width width
-               }]
+  (let [rendered? @(rf/subscribe [:pdf/page-rendered? i])]
+    [:div {:style {:margin (str (:page-margin GLOBALS) "px")
+                   :position "relative"}}
+     [page-canvas i]
      (when (not rendered?)
-       (page-spinner))
-       
+       [page-spinner])
      ;text layer highlight stuff here, when page is rendered
      ]))
-
-(def scale-tmp (atom 0.5))
 
 (defn on-scroll [canvas-height _]
   (let [el (js/document.getElementById "page-container")
         scroll-top (.-scrollTop el)
         view-height (.-clientHeight el)
-        margin 10
-        center-page (js/Math.floor (/ (+ scroll-top (/ view-height 2)) (+ canvas-height (* 2 margin))))] 
+        margin (:page-margin GLOBALS)
+        center-page (js/Math.floor (/ (+ scroll-top (/ view-height 2)) (+ canvas-height (* 2 margin))))]
+    (println view-height canvas-height)
     (rf/dispatch [:pdf/maybe-new-center-page center-page])))
 
 (defn pdf-component []
@@ -306,21 +333,29 @@
         [_ height] @(rf/subscribe [:pdf/canvas-size])] 
     (println "pdf-component render fn")
     (println panel-state page-count)
-    [:div {:style {:height "100vh"}}
-     (nav-bar)
-     [:div {:style {:display "flex" :flex-direction "column" :align-items "center" :height "100%"}}
-      (if (nil? page-count)
-        [:div "LOADING PDF"]
-        (into [:div {:style {:display "flex"
-                             :flex-direction "column"
-                             :overflow "scroll"} :id "page-container" :on-scroll (partial on-scroll height)}]
-              (map pdf-page (range page-count))))]]))
+    [:div {:style {:height "100vh"
+                   :display "flex"
+                   :flex-direction "column"}}
+     [nav-bar]
+     (if (nil? page-count)
+       [:div "LOADING PDF"]
+       (into [:div {:style {:display "flex"
+                            :flex-direction "column"
+                            :background-color "#525659"
+                            :width "100%"
+                            :align-items "center"
+                            :flex "1"
+                            :overflow-y "scroll"} 
+                    :id "page-container" 
+                    :on-scroll (partial on-scroll height)}]
+             (map #(vector pdf-page %) (range page-count))))]))
 
 
 ;;#########################################################################
 ;;#########################################################################
 
-
+(defn y-of-page [page-num margin canvas-height]
+  (* page-num (+ canvas-height (* 2 margin))))
 
 ;;########################################################################
 ;; Top Level User Initiated Events
@@ -329,29 +364,38 @@
  :pdf/maybe-new-center-page
  (fn [{:keys [db]} [_ center-page]]
    (if (not= center-page (get-in db [:pdf :params :center-page]))
-     {:db (assoc-in db [:pdf :params :center-page] center-page)
+     {:db (-> (assoc-in db [:pdf :params :center-page] center-page)
+              (assoc-in [:pdf :nav-input-val] nil))
       :fx [[:dispatch [:pdf/check-for-work]]]
       }
      {:db db})))
 
+(rf/reg-event-fx
+ :pdf/seek-page
+ (fn [{:keys [db]} [_ page-num]]
+   {:db (-> (assoc-in db [:pdf :nav-input-val] nil)
+            (assoc-in [:pdf :params :center-page] page-num))
+    :fx [[:pdf/scroll-to (y-of-page page-num 10 (get-in db [:pdf :params :canvas-height]))]
+         [:dispatch [:pdf/check-for-work]]]}))
+
+(rf/reg-fx
+ :pdf/scroll-to
+ (fn [y]
+   (let [el (js/document.getElementById "page-container")]
+     (.scrollTo el #js {:top y :behavior "instant"}))))
 
 (rf/reg-event-fx
  :pdf/view-scale-changed
  (fn [{:keys [db]} [_ scale]]
-   (let [center (get-in db [:pdf :center-page])
-         window (get-in db [:pdf :window-size])
-         pages (get-in db [:pdf :pages])]
      {:db (reduce (fn [acc-db [i page]]
                     (if (or (= :rendered (:status page))
                             (= :rendering (:status page)))
-                      (do
-                        (println "re-rendering page" i page)
-                       (update-in acc-db [:pdf :pages i] assoc :update :re-render))
+                      (update-in acc-db [:pdf :pages i] assoc :update :re-render)
                       acc-db))
                   (assoc-in db [:pdf :params :scale] scale)
                   (get-in db [:pdf :pages]))
       :fx [
-           [:dispatch [:pdf/check-for-work]]]})))
+           [:dispatch [:pdf/check-for-work]]]}))
 
 (rf/reg-fx
  :pdf/resize-canvases
@@ -363,18 +407,18 @@
      (set! canvas -height height))))
 
 ;; DONE(jecneps): what if click to send open event but pdfjs hasn't loaded yet?
-(rf/reg-event-fx
- :pdf/quote-clicked
- (fn [{:keys [db]} [_ url]]
-   {:db (assoc-in db [:pdf :params :center-page] 1) ;TODO(jecneps): derive from quote info
-    :fx [[:pdf/load-pdf [(:pdfjs db) url]]
-         (when (= :closed (get-in db [:pdf :panel-state]))
-           [:pdf/set-pdf-panel-state :open])]}))
+;; (rf/reg-event-fx
+;;  :pdf/quote-clicked
+;;  (fn [{:keys [db]} [_ url]]
+;;    {:db (assoc-in db [:pdf :params :center-page] 1) ;TODO(jecneps): derive from quote info
+;;     :fx [[:pdf/load-pdf [(:pdfjs db) url]]
+;;          (when (= :closed (get-in db [:pdf :panel-state]))
+;;            [:pdf/set-pdf-panel-state :open])]}))
 
-(rf/reg-event-db
- :pdf/set-pdf-panel-state
- (fn [db [_ state]]
-   (assoc-in db [:pdf :panel-state] state)))
+;; (rf/reg-event-db
+;;  :pdf/set-pdf-panel-state
+;;  (fn [db [_ state]]
+;;    (assoc-in db [:pdf :panel-state] state)))
 
 ;;########################################################################
 ;; Top Level Initialization

@@ -1,5 +1,5 @@
 node_modules/
-public/resources/js/*
+public/resources/js/
 
 .clj-kondo/
 .lsp/
