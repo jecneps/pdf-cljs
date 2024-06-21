@@ -22,6 +22,11 @@
   ([db i k v] (update-in db [:pdf :pages i] assoc k v))
   ([db i k v & kvs] (apply update-in db [:pdf :pages i] assoc k v kvs)))
 
+(defn careful-destructure [v]
+  (if (vector? v)
+    [v nil]
+    [[] v]))
+
 ;;##############################################################################
 ;;##############################################################################
 ;; Checking Logic
@@ -36,6 +41,7 @@
 
 (def teardown-keys [:status :inactive
                     :update nil
+                    :text-contents nil
                     :page-obj nil])
 
 (defn cancelled-update [page]
@@ -55,7 +61,7 @@
 (defn re-render-update [page]
   (assoc page
          :update nil
-         :status :rendering))
+         :status [:rendering :rendering]))
 
 (defn prioritize-pages [page-nums cur-in-flight center max-in-flight]
   (->> (take (- max-in-flight cur-in-flight)
@@ -86,7 +92,7 @@
                                                                                      scale
                                                                                      pdfjs
                                                                                      (:text-contents page)
-                                                                                     (.getViewport ^js (:pdf-obj page) #js {:scale scale})
+                                                                                     (.getViewport ^js (:page-obj page) #js {:scale scale})
                                                                                      (:text-layer-div page)]])] 
                        :else acc)))
                  [[] []]))))
@@ -154,12 +160,12 @@
        [_ true] {:db  (update-page db i
                                    :status [:waiting-for-canvas :getting-text-content]
                                    :page-obj page-obj)
-                 :fx [[:pdf/get-text-content page-obj i]]}
+                 :fx [[:pdf/get-text-content [page-obj i]]]}
        [_ false] {:db (update-page db i
                                    :status [:rendering :getting-text-content]
                                    :page-obj page-obj)
                   :fx [[:pdf/render-page [i scale page-obj (:canvas page)]]
-                       [:pdf/get-text-content page-obj i]]}))))
+                       [:pdf/get-text-content [page-obj i]]]}))))
 
 (rf/reg-event-fx
  :pdf/new-canvas-size
@@ -189,6 +195,7 @@
          width (js/Math.round (.-width viewport))]
      (set! canvas -height height)
      (set! canvas -width width)
+     #_{:clj-kondo/ignore [:unresolved-symbol]}
      (js-await [_ (.-promise (.render page-obj render-context))]
                (rf/dispatch [:pdf/page-rendered i scale]))
      (rf/dispatch [:pdf/new-canvas-size width height]))))
@@ -216,13 +223,13 @@
  (fn [[^js page-obj i]]
    #_{:clj-kondo/ignore [:unresolved-symbol]}
    (js-await [text-contents (.getTextContent page-obj)]
-             (rf/dispatch [:pdf/text-content-ready i text-contents]))))
+             (rf/dispatch [:pdf/text-contents-ready i text-contents]))))
 
 (rf/reg-event-fx
  :pdf/text-contents-ready
  (fn [{:keys [db]} [_ i text-contents]]
    (let [page (get-in db [:pdf :pages i])
-         [canvas-status text-layer-status] (:status page)
+         [canvas-status _] (:status page)
          text-layer-div (:text-layer-div page)]
      (match [(:update page) (nil? text-layer-div)]
        [:cancel _] {:db (update-page db i
@@ -234,44 +241,48 @@
                                    :status [canvas-status :rendering]
                                    :text-contents text-contents)
                   :fx [[:pdf/render-text-layer
-                        i
-                        (get-in db [:pdf :params :scale])
-                        (get-in db [:pdf :pdfjs])
-                        text-contents
-                        (.getViewport ^js (:page-obj page) #js {:scale (get-in db [:pdf :params :scale])})
-                        text-layer-div]]}))))
+                        [i
+                         (get-in db [:pdf :params :scale])
+                         (get-in db [:pdf :pdfjs])
+                         text-contents
+                         (.getViewport ^js (:page-obj page) #js {:scale (get-in db [:pdf :params :scale])})
+                         text-layer-div]]]}))))
 
 (rf/reg-fx
  :pdf/render-text-layer
  (fn [[i scale ^js pdfjs text-content viewport div-ref]]
    (let [TextLayer (.-TextLayer pdfjs)]
      #_{:clj-kondo/ignore [:unresolved-symbol]}
-     (js-await [_ (->
-                   (TextLayer. #js {:textContentSource text-content
-                                    :viewport viewport
-                                    :container div-ref})
-                   (.render))]
-               (rf/dispatch [:pdf/text-layer-rendered i scale])))))
+     (.renderTextLayer pdfjs #js {:textContentSource text-content
+                                  :viewport viewport
+                                  :container div-ref})
+
+     (rf/dispatch [:pdf/text-layer-rendered i scale]))))
 
 (rf/reg-event-fx
  :pdf/text-layer-rendered
  (fn [{:keys [db]} [_ i scale-rendered]]
+   (println "text layer rendered "  i scale-rendered)
    (let [cur-scale (get-in db [:pdf :params :scale])
+         _ (println "MADE IT")
          page (get-in db [:pdf :pages i])
+         _ (println (:status page))
          [canvas-status _] (:status page)
          re-render? (not= cur-scale scale-rendered)]
      (if (and re-render?
               (not= :cancel (:update page)))
        {:fx [[:pdf/render-text-layer
-              i
-              cur-scale
-              (get-in db [:pdf :pdfjs])
-              (:text-contents page)
-              (.getViewport ^js (:page-obj page) #js {:scale cur-scale})
-              (:text-layer-div page)]]}
+              [i
+               cur-scale
+               (get-in db [:pdf :pdfjs])
+               (:text-contents page)
+               (.getViewport ^js (:page-obj page) #js {:scale cur-scale})
+               (:text-layer-div page)]]]}
        {:db (update-page db i
-                         :status [canvas-status :rendered])
-        :fx [[:pdf/check-for-work]]}))))
+                         :status (if (= :rendered canvas-status)
+                                   :rendered
+                                   [canvas-status :rendered]))
+        :fx [[:dispatch [:pdf/check-for-work]]]}))))
 
 
 ;;######################################################
@@ -284,7 +295,7 @@
  :pdf/canvas-mounted
  (fn [{:keys [db]} [_ i canvas]]
      (let [new-db (assoc-in db [:pdf :pages i :canvas] canvas)
-           [canvas-status text-layer-status] (get-in db [:pdf :pages i :status])
+           [[canvas-status text-layer-status] _] (careful-destructure (get-in db [:pdf :pages i :status]))
            w (get-in db [:pdf :params :canvas-width])
            h (get-in db [:pdf :params :canvas-height])]
        (set! canvas -width w)
@@ -292,8 +303,8 @@
        (match [(get-in db [:pdf :pages i :update])
                canvas-status]
          [:cancel _] {:db new-db
-                                        :fx [[:pdf/resize-canvas [canvas w h]]
-                                             [:pdf/check-for-work]]}
+                        :fx [[:pdf/resize-canvas [canvas w h]]
+                             [:dispatch [:pdf/check-for-work]]]} 
          [_ :waiting-for-canvas] {:db (update-page new-db i
                                                    :status [:render text-layer-status])
                                   :fx [[:pdf/render-page [i
@@ -309,11 +320,11 @@
    (let [new-db (update-page db i :text-layer-div div)
          page (get-in db [:pdf :pages i])
          scale (get-in db [:pdf :params :scale])
-         [canvas-status text-layer-status] (:status page)]
+         [[canvas-status text-layer-status] _] (careful-destructure (:status page))]
      (match [(get-in db [:pdf :pages i :update])
              text-layer-status]
        [:cancel _] {:db new-db
-                    :fx [[:pdf/check-for-work]]}
+                    :fx [[:dispatch [:pdf/check-for-work]]]}
        [_ :waiting-for-text-layer-div] {:db (update-page new-db i
                                                          :status [canvas-status :rendering])
                                         :fx [[:pdf/render-text-layer [i
@@ -396,8 +407,7 @@
                       acc-db))
                   (assoc-in db [:pdf :params :scale] scale)
                   (get-in db [:pdf :pages]))
-      :fx [
-           [:dispatch [:pdf/check-for-work]]]}))
+      :fx [[:dispatch [:pdf/check-for-work]]]}))
 
 (rf/reg-event-db
  :pdf/set-pdf-panel-state
@@ -433,7 +443,7 @@
         (assoc-in [:pdf :command-queue] nil)
         (update-in [:pdf :params]
                    assoc
-                   :window-size 304
+                   :window-size 10
                    :center-page 0
                    :max-in-flight 5
                    :scale 1
@@ -470,7 +480,6 @@
  :pdf/pdfjs-loaded
  (fn [{:keys [db]} [_ ^js pdfjs]]
    (println "pdfjs loaded")
-   (println (.renderTextLayer pdfjs {}))
    {:db (assoc-in db [:pdf :pdfjs] pdfjs)
     :fx (when-let [url (get-in db [:pdf :command-queue])]
           [[:pdf/load-pdf [pdfjs url]]])}))
