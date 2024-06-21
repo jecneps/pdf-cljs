@@ -1,5 +1,6 @@
 (ns pdf-cljs.views
   (:require [re-frame.core :as rf]
+            [pdf-cljs.subs]
             [pdf-cljs.globals :as g]))
 
 
@@ -59,7 +60,7 @@
   [:div {:class "textLayer"
          :ref (fn [r]
                 (when (not (nil? r))
-                  (rf/dispatch [:pdf/text-layer-mounted i r])))}])
+                  (rf/dispatch [:pdf/text-layer-div-mounted i r])))}])
 
 (defn pdf-page [i]
   (let [rendered? @(rf/subscribe [:pdf/page-rendered? i])]
