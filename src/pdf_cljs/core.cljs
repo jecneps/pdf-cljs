@@ -414,6 +414,11 @@
  (fn [db [_ state]]
    (assoc-in db [:pdf :panel-state] state)))
 
+(rf/reg-event-fx
+ :pdf/quote-selected
+ (fn [{:keys [db]} [_ url]]
+   ))
+
 ;;########################################################################
 ;;########################################################################
 ;; TOP LEVEL INITIALIZATION 
@@ -425,7 +430,8 @@
  :pdf/pdf-load-request
  (fn [{:keys [db]} [_ url]]
    (if-let [^js pdfjs (get-in db [:pdf :pdfjs])]
-     {:fx [[:pdf/load-pdf [pdfjs url]]]}
+     (if-let [^js prev-pdf-obj (get-in db [:pdf :pdf-obj])]
+       {:fx [[:pdf/load-pdf [pdfjs url]]]})
      {:db (assoc-in db [:pdf :command-queue] url)})))
 
 (rf/reg-fx

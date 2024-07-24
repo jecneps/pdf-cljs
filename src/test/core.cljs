@@ -11,8 +11,9 @@
 (defonce root (createRoot (.. js/document (getElementById "pdf-panel-container"))))
 
 (defn start-page []
-  (rf/dispatch [:pdf/page-start])
-  (rf/dispatch [:pdf/pdf-load-request "resources/test.pdf"]))
+  (rf/dispatch-sync [:pdf/page-start])
+  ;; (rf/dispatch [:pdf/pdf-load-request "resources/test.pdf"])
+  )
 
 (defn init []
   (.render root (r/as-element [pdf-component])))
