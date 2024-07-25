@@ -98,6 +98,7 @@
     [:div {:style (case panel-state
                     :fullscreen (merge full-style base-style)
                     :closed (merge base-style {:display "none"})
+                    nil (merge base-style {:display "none"})
                     base-style)
            :id "pdf-component"}
      [nav-bar panel-state]

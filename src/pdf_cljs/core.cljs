@@ -424,14 +424,13 @@
 ;; TOP LEVEL INITIALIZATION 
 ;;########################################################################
 ;;########################################################################
-
 ;TODO(jecneps): command-queue seems like bad name
 (rf/reg-event-fx
  :pdf/pdf-load-request
  (fn [{:keys [db]} [_ url]]
+   (println "In pdf-load-request: url=" url)
    (if-let [^js pdfjs (get-in db [:pdf :pdfjs])]
-     (if-let [^js prev-pdf-obj (get-in db [:pdf :pdf-obj])]
-       {:fx [[:pdf/load-pdf [pdfjs url]]]})
+     {:fx [[:pdf/load-pdf [pdfjs url]]]}
      {:db (assoc-in db [:pdf :command-queue] url)})))
 
 (rf/reg-fx
@@ -470,7 +469,7 @@
 
 (rf/reg-event-fx
  :pdf/page-start
- (fn [_ _]
+ (fn [_]
    {:fx [[:pdf/load-external-pdfjs]
          [:dispatch [:pdf/set-pdf-panel-state :closed]]]}))
 
